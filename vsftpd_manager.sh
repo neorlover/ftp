@@ -183,6 +183,74 @@ open_firewall_ports() {
     fi
 }
 
+remove_user_from_deny_lists() {
+    for deny_file in /etc/ftpusers /etc/vsftpd.user_list /etc/vsftpd/ftpusers /etc/vsftpd/user_list; do
+        if [ -f "$deny_file" ]; then
+            tmp_file="${deny_file}.codex_tmp"
+            grep -vxF "$FTP_USER" "$deny_file" >"$tmp_file" 2>/dev/null || true
+            cat "$tmp_file" >"$deny_file"
+            rm -f "$tmp_file"
+        fi
+    done
+}
+
+install_selfcheck_tools() {
+    if command_exists curl; then
+        return 0
+    fi
+
+    pkg_manager=$(detect_pkg_manager)
+    case "$pkg_manager" in
+        apt)
+            apt-get install -y curl >/dev/null 2>&1 || true
+            ;;
+        dnf)
+            dnf install -y curl >/dev/null 2>&1 || true
+            ;;
+        yum)
+            yum install -y curl >/dev/null 2>&1 || true
+            ;;
+    esac
+}
+
+ftp_self_check() {
+    if ! read_state; then
+        error "未检测到安装信息，请先安装 FTP 服务端。"
+        return 1
+    fi
+
+    print_line
+    printf "开始本机自检: 127.0.0.1:%s\n" "$FTP_PORT"
+
+    if ! service_action status >/dev/null 2>&1; then
+        warn "vsftpd 服务当前未处于正常运行状态。"
+    fi
+
+    if command_exists ss; then
+        if ss -lnt 2>/dev/null | awk '{print $4}' | grep -E "[:.]${FTP_PORT}\$" >/dev/null 2>&1; then
+            info "监听端口检测通过。"
+        else
+            error "未检测到 FTP 端口监听。"
+        fi
+    fi
+
+    install_selfcheck_tools
+    if command_exists curl; then
+        if curl --silent --show-error --disable-epsv --user "$FTP_USER:$FTP_PASS" "ftp://127.0.0.1:$FTP_PORT/" >/dev/null 2>&1; then
+            info "FTP 用户名密码自检通过。"
+            print_line
+            return 0
+        fi
+        error "FTP 用户名密码自检失败。"
+        warn "建议检查 /var/log/auth.log、journalctl -u vsftpd 和云安全组。"
+    else
+        warn "系统没有 curl，跳过 FTP 登录自检。"
+    fi
+
+    print_line
+    return 1
+}
+
 random_username() {
     suffix=$(tr -dc 'a-z0-9' </dev/urandom | head -c 6)
     printf 'ftp%s\n' "$suffix"
@@ -339,6 +407,7 @@ ensure_user() {
     fi
 
     printf '%s:%s\n' "$FTP_USER" "$FTP_PASS" | chpasswd
+    remove_user_from_deny_lists
     mkdir -p "$FTP_DIR"
     user_group=$(id -gn "$FTP_USER" 2>/dev/null || printf '%s' "$FTP_USER")
     chown "$FTP_USER:$user_group" "$FTP_DIR"
@@ -360,6 +429,7 @@ listen_ipv6=NO
 anonymous_enable=NO
 local_enable=YES
 write_enable=YES
+guest_enable=NO
 local_umask=022
 dirmessage_enable=YES
 use_localtime=YES
@@ -370,6 +440,8 @@ allow_writeable_chroot=YES
 secure_chroot_dir=/var/run/vsftpd/empty
 pam_service_name=vsftpd
 xferlog_std_format=YES
+userlist_enable=NO
+tcp_wrappers=NO
 user_sub_token=\$USER
 local_root=$FTP_DIR
 listen_port=$FTP_PORT
@@ -416,6 +488,16 @@ show_status() {
     print_line
 }
 
+show_dashboard() {
+    if read_state; then
+        printf "当前 FTP 配置信息:\n"
+        show_status
+    else
+        printf "当前尚未安装 FTP 服务端。\n"
+        print_line
+    fi
+}
+
 install_ftp() {
     prompt_directory || {
         error "目录处理失败。"
@@ -454,6 +536,7 @@ install_ftp() {
 
     info "FTP 服务端安装并配置完成。"
     show_status
+    ftp_self_check || true
 }
 
 uninstall_ftp() {
@@ -533,6 +616,7 @@ change_credentials() {
     write_state_safe
     info "用户名和密码修改完成。"
     show_status
+    ftp_self_check || true
 }
 
 change_port() {
@@ -565,6 +649,7 @@ change_port() {
 
     info "端口修改完成。"
     show_status
+    ftp_self_check || true
 }
 
 show_menu() {
@@ -575,6 +660,7 @@ show_menu() {
     printf "2. 卸载 FTP 服务端\n"
     printf "3. 修改用户名密码\n"
     printf "4. 修改端口\n"
+    printf "5. FTP 本机自检\n"
     printf "0. 退出\n"
     print_line
     printf "请输入序号: "
@@ -583,6 +669,7 @@ show_menu() {
 main() {
     require_root
     resolve_paths
+    show_dashboard
 
     while :; do
         show_menu
@@ -599,6 +686,9 @@ main() {
                 ;;
             4)
                 change_port
+                ;;
+            5)
+                ftp_self_check
                 ;;
             0)
                 exit 0
