@@ -25,6 +25,14 @@ error() {
     printf '%s\n' "[ERROR] $1" >&2
 }
 
+prompt_read() {
+    if [ -r /dev/tty ]; then
+        read -r "$1" </dev/tty
+    else
+        read -r "$1"
+    fi
+}
+
 require_root() {
     if [ "$(id -u)" -ne 0 ]; then
         error "请使用 root 用户运行此脚本。"
@@ -141,7 +149,8 @@ install_vsftpd_package() {
     case "$pkg_manager" in
         apt)
             info "检测到 apt，开始安装 vsftpd。"
-            apt-get update && apt-get install -y vsftpd
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update && apt-get install -y --no-install-recommends vsftpd
             ;;
         dnf)
             info "检测到 dnf，开始安装 vsftpd。"
@@ -163,6 +172,7 @@ remove_vsftpd_package() {
 
     case "$pkg_manager" in
         apt)
+            export DEBIAN_FRONTEND=noninteractive
             apt-get remove -y vsftpd
             ;;
         dnf)
@@ -401,7 +411,7 @@ EOF
 prompt_directory() {
     while :; do
         printf "请输入 FTP 目录（可填写现有目录，或输入新目录路径）: "
-        read -r target_dir
+        prompt_read target_dir || return 1
 
         if [ -z "$target_dir" ]; then
             warn "目录不能为空。"
@@ -414,7 +424,7 @@ prompt_directory() {
         fi
 
         printf "目录不存在，是否创建 [%s] ? (y/n): " "$target_dir"
-        read -r create_answer
+        prompt_read create_answer || return 1
         case "$create_answer" in
             y|Y)
                 mkdir -p "$target_dir" || return 1
@@ -433,11 +443,11 @@ prompt_port() {
         printf "1. 自定义端口\n"
         printf "2. 随机端口\n"
         printf "请选择端口设置方式 [1-2]: "
-        read -r port_choice
+        prompt_read port_choice || return 1
         case "$port_choice" in
             1)
                 printf "请输入端口号（1-65535）: "
-                read -r input_port
+                prompt_read input_port || return 1
                 case "$input_port" in
                     ''|*[!0-9]*)
                         warn "端口必须是数字。"
@@ -468,17 +478,17 @@ prompt_user_pass() {
         printf "1. 自定义用户名和密码\n"
         printf "2. 随机生成用户名和密码\n"
         printf "请选择账号设置方式 [1-2]: "
-        read -r user_choice
+        prompt_read user_choice || return 1
         case "$user_choice" in
             1)
                 printf "请输入 FTP 用户名: "
-                read -r FTP_USER
+                prompt_read FTP_USER || return 1
                 if [ -z "$FTP_USER" ]; then
                     warn "用户名不能为空。"
                     continue
                 fi
                 printf "请输入 FTP 密码: "
-                read -r FTP_PASS
+                prompt_read FTP_PASS || return 1
                 if [ -z "$FTP_PASS" ]; then
                     warn "密码不能为空。"
                     continue
@@ -674,7 +684,7 @@ uninstall_ftp() {
 
     if [ -n "$old_user" ] && id "$old_user" >/dev/null 2>&1; then
         printf "是否删除 FTP 系统用户 [%s] ? (y/n): " "$old_user"
-        read -r delete_user
+        prompt_read delete_user || return 1
         case "$delete_user" in
             y|Y)
                 userdel "$old_user" >/dev/null 2>&1 || true
@@ -801,7 +811,10 @@ main() {
 
     while :; do
         show_menu
-        read -r choice
+        prompt_read choice || {
+            error "无法读取输入，请在交互式终端中运行该脚本。"
+            exit 1
+        }
         case "$choice" in
             1)
                 install_ftp
