@@ -213,6 +213,26 @@ install_selfcheck_tools() {
     esac
 }
 
+show_auth_diagnostics() {
+    if id "$FTP_USER" >/dev/null 2>&1; then
+        if command_exists passwd; then
+            passwd -S "$FTP_USER" 2>/dev/null || true
+        fi
+        if command_exists chage; then
+            chage -l "$FTP_USER" 2>/dev/null || true
+        fi
+        getent passwd "$FTP_USER" 2>/dev/null || true
+    fi
+
+    if [ -f "/var/log/auth.log" ]; then
+        tail -n 20 /var/log/auth.log 2>/dev/null || true
+    fi
+
+    if command_exists journalctl; then
+        journalctl -u vsftpd -n 20 --no-pager 2>/dev/null || true
+    fi
+}
+
 ftp_self_check() {
     if ! read_state; then
         error "未检测到安装信息，请先安装 FTP 服务端。"
@@ -243,6 +263,7 @@ ftp_self_check() {
         fi
         error "FTP 用户名密码自检失败。"
         warn "建议检查 /var/log/auth.log、journalctl -u vsftpd 和云安全组。"
+        show_auth_diagnostics
     else
         warn "系统没有 curl，跳过 FTP 登录自检。"
     fi
@@ -407,6 +428,16 @@ ensure_user() {
     fi
 
     printf '%s:%s\n' "$FTP_USER" "$FTP_PASS" | chpasswd
+    if command_exists usermod; then
+        usermod -U "$FTP_USER" >/dev/null 2>&1 || true
+        usermod -e "" "$FTP_USER" >/dev/null 2>&1 || true
+    fi
+    if command_exists passwd; then
+        passwd -u "$FTP_USER" >/dev/null 2>&1 || true
+    fi
+    if command_exists chage; then
+        chage -I -1 -m 0 -M 99999 -E -1 "$FTP_USER" >/dev/null 2>&1 || true
+    fi
     remove_user_from_deny_lists
     mkdir -p "$FTP_DIR"
     user_group=$(id -gn "$FTP_USER" 2>/dev/null || printf '%s' "$FTP_USER")
