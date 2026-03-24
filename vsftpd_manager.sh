@@ -133,6 +133,56 @@ enable_vsftpd() {
     fi
 }
 
+get_login_shell() {
+    if [ -x "/bin/bash" ]; then
+        printf '%s\n' "/bin/bash"
+        return
+    fi
+    if [ -x "/bin/sh" ]; then
+        printf '%s\n' "/bin/sh"
+        return
+    fi
+    if [ -x "/bin/false" ]; then
+        printf '%s\n' "/bin/false"
+        return
+    fi
+    printf '%s\n' "/bin/sh"
+}
+
+ensure_shell_allowed() {
+    shell_path="$1"
+    [ -f "/etc/shells" ] || touch /etc/shells
+    if ! grep -Fx "$shell_path" /etc/shells >/dev/null 2>&1; then
+        printf '%s\n' "$shell_path" >> /etc/shells
+    fi
+}
+
+open_firewall_ports() {
+    info "尝试自动放行 FTP 端口和被动端口范围。"
+
+    if command_exists ufw; then
+        ufw allow "$FTP_PORT"/tcp >/dev/null 2>&1 || true
+        ufw allow 20/tcp >/dev/null 2>&1 || true
+        ufw allow 40000:40100/tcp >/dev/null 2>&1 || true
+    fi
+
+    if command_exists firewall-cmd; then
+        firewall-cmd --permanent --add-port="${FTP_PORT}/tcp" >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=20/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=40000-40100/tcp >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    fi
+
+    if command_exists iptables; then
+        iptables -C INPUT -p tcp --dport "$FTP_PORT" -j ACCEPT >/dev/null 2>&1 || \
+        iptables -I INPUT -p tcp --dport "$FTP_PORT" -j ACCEPT >/dev/null 2>&1 || true
+        iptables -C INPUT -p tcp --dport 20 -j ACCEPT >/dev/null 2>&1 || \
+        iptables -I INPUT -p tcp --dport 20 -j ACCEPT >/dev/null 2>&1 || true
+        iptables -C INPUT -p tcp --match multiport --dports 40000:40100 -j ACCEPT >/dev/null 2>&1 || \
+        iptables -I INPUT -p tcp --match multiport --dports 40000:40100 -j ACCEPT >/dev/null 2>&1 || true
+    fi
+}
+
 random_username() {
     suffix=$(tr -dc 'a-z0-9' </dev/urandom | head -c 6)
     printf 'ftp%s\n' "$suffix"
@@ -278,14 +328,13 @@ prompt_user_pass() {
 }
 
 ensure_user() {
+    shell_path=$(get_login_shell)
+    ensure_shell_allowed "$shell_path"
+
     if id "$FTP_USER" >/dev/null 2>&1; then
         info "用户 $FTP_USER 已存在，将更新密码和目录。"
-        usermod -d "$FTP_DIR" -s /usr/sbin/nologin "$FTP_USER" 2>/dev/null || \
-        usermod -d "$FTP_DIR" -s /sbin/nologin "$FTP_USER" 2>/dev/null || true
+        usermod -d "$FTP_DIR" -s "$shell_path" "$FTP_USER" 2>/dev/null || true
     else
-        shell_path="/usr/sbin/nologin"
-        [ -x "$shell_path" ] || shell_path="/sbin/nologin"
-        [ -x "$shell_path" ] || shell_path="/bin/false"
         useradd -d "$FTP_DIR" -s "$shell_path" "$FTP_USER"
     fi
 
@@ -324,6 +373,7 @@ xferlog_std_format=YES
 user_sub_token=\$USER
 local_root=$FTP_DIR
 listen_port=$FTP_PORT
+port_enable=YES
 pasv_enable=YES
 pasv_min_port=40000
 pasv_max_port=40100
@@ -395,6 +445,7 @@ install_ftp() {
         return 1
     }
 
+    open_firewall_ports
     enable_vsftpd
     service_action restart || service_action start || {
         error "vsftpd 服务启动失败，请检查系统日志。"
@@ -506,6 +557,7 @@ change_port() {
         error "状态文件写入失败。"
         return 1
     }
+    open_firewall_ports
     service_action restart || service_action start || {
         error "vsftpd 服务重启失败，请检查系统日志。"
         return 1
